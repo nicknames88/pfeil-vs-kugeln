@@ -196,6 +196,27 @@
   /* --- Handy und Tablet --------------------------------------------------
      Auf Tippgeräten darf die Seite weder wackeln noch zoomen, und alles zum
      Antippen muss groß genug für einen Daumen sein. */
+  /* --- Warteraum fürs Zusammenspielen --- */
+  .grosscode { font: 800 42px ui-monospace, Menlo, monospace; letter-spacing: 6px;
+               color: #5fd0ff; margin: 6px 0 18px; padding: 14px 10px; border-radius: 14px;
+               background: #101828; border: 1px solid #27324a; user-select: all; }
+  .lobbyzeile { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .codefeld { padding: 12px 16px; border-radius: 10px; width: 160px; text-align: center;
+              background: #0d1320; border: 1px solid #27324a; color: #eaf4ff;
+              font: 700 20px ui-monospace, Menlo, monospace; letter-spacing: 3px; }
+  .codefeld:focus { outline: 2px solid #4d9dff; }
+  .mitspielerhp { color: #7cff9d; }
+
+  /* Der Rucksack als Klappe: Kopfzeile immer sichtbar, Liste aufklappbar. */
+  details.ausruestung > summary { list-style: none; cursor: pointer; }
+  details.ausruestung > summary::-webkit-details-marker { display: none; }
+  details.ausruestung > summary:hover .awzeile { color: #eaf4ff; }
+  .awzeile { display: block; margin-bottom: 7px; }
+  .awtipp { color: #7f92b3; font-weight: 500; font-size: 11.5px; margin-left: 6px; }
+  .awtext { margin: 10px 0 8px; font-size: 12px; color: #8fa3c4; }
+  details.ausruestung[open] > summary .awtipp::after { content: ' ▴'; }
+  details.ausruestung:not([open]) > summary .awtipp::after { content: ' ▾'; }
+
   .standfeld { width: 100%; margin-bottom: 10px; padding: 10px 12px; border-radius: 10px;
                background: #0d1320; border: 1px solid #27324a; color: #9fb0cc;
                font: 500 11px ui-monospace, Menlo, monospace; resize: vertical;
@@ -219,6 +240,19 @@
   /* Schmale Bildschirme: Karten untereinander statt nebeneinander. */
   @media (max-width: 900px) {
     #overlay { padding: 10px; align-items: flex-start; }
+    /* Die fünf Läden in EINER Zeile zum Wischen statt auf drei Zeilen. */
+    .reiter { flex-wrap: nowrap; overflow-x: auto; justify-content: flex-start;
+              gap: 6px; padding-bottom: 4px; scrollbar-width: none; }
+    .reiter::-webkit-scrollbar { display: none; }
+    .reiter button { flex: 0 0 auto; padding: 8px 12px; font-size: 12px; }
+    /* Kopfzeile des Ladens kompakter */
+    .baumkopf { gap: 8px; font-size: 12px; }
+    .baumkopf .bestwert { padding: 7px 12px; font-size: 12px; }
+    .baumkopf .knopf { padding: 9px 14px; font-size: 13px; }
+    .awreihe { gap: 5px; }
+    .wwahl { padding: 7px 9px; font-size: 12px; }
+    .legende { font-size: 10.5px; }
+    .baumflaeche { max-height: 46vh; }
     .karte, .karte.breit { max-width: 100%; }
     .karte.start { padding: 16px 14px 14px; }
     .ladenliste { grid-template-columns: 1fr; }
@@ -226,7 +260,6 @@
     .tastenzeile { display: none; }             /* Tastenhilfe nützt hier nichts */
     .werte > div { min-width: 74px; padding: 6px 9px; }
     .werte b { font-size: 17px; }
-    .reiter { flex-wrap: wrap; }
     #waffenleiste { overflow-x: auto; flex-wrap: nowrap; justify-content: flex-start;
                     scrollbar-width: none; }
     #waffenleiste::-webkit-scrollbar { display: none; }
@@ -351,6 +384,7 @@
     <div id="hudDaten" style="color:#c78bff">⚗ <b>0</b></div>
     <div id="hudBauteile" style="color:#7cff9d">🔩 <b>0</b></div>
     <div id="hudGlut" style="color:#ff9d5c">🔥 <b>0</b></div>
+    <div id="hudMitspieler" style="display:none" title="Leben deines Mitspielers">👥 <b>100</b></div>
     <div id="hudPause" title="Pause (Taste P)">⏸</div>
     <div class="rechts" id="hudMusik" style="pointer-events:auto;cursor:pointer" title="Musik an/aus (Taste N)">🎵</div>
     <div id="hudTon" style="pointer-events:auto;cursor:pointer" title="Ton an/aus (Taste M)">🔊</div>
@@ -526,6 +560,12 @@ const EINSTELLUNGEN = {
 
   // --- Aufträge ----------------------------------------------------------
   auftragBonus:     120,   // Extra-Münzen für einen geschafften Auftrag
+
+  // --- Zusammen spielen --------------------------------------------------
+  // Zu zweit kommen mehr Gegner, aber keine stärkeren. Bosse bekommen etwas
+  // mehr Leben, sonst wären sie zu zweit in Sekunden umgelegt.
+  koopGegnerFaktor: 1.9,
+  koopBossLeben:    1.6,
   // Je tiefer du kommst, desto mehr wirft eine Stufe ab - Vorankommen
   // lohnt sich mehr als Steckenbleiben.
   stufenErtragBonus: .18,
@@ -2979,6 +3019,468 @@ function munitionFuellen() {
 }
 
 // ============================================================================
+// Zusammen spielen
+// Zwei Rechner reden direkt miteinander (WebRTC), vermittelt über den
+// kostenlosen PeerJS-Dienst - wir brauchen selbst keinen Server.
+//
+// Einer ist der GASTGEBER: Bei ihm läuft das ganze Spiel. Er rechnet Gegner,
+// Schüsse und Level aus und schickt dem anderen 20-mal pro Sekunde ein Bild
+// der Lage. Der GAST schickt nur, wohin er läuft und ob er schießt.
+// So können die beiden nie auseinanderlaufen - es gibt nur eine Wahrheit.
+// ============================================================================
+const NETZ = {
+  an: false,            // spielen wir gerade zusammen?
+  istGast: false,       // bin ich der Gast (sonst Gastgeber)?
+  verbunden: false,
+  code: '',             // der Code zum Beitreten
+  peer: null,
+  leitung: null,        // die offene Verbindung
+  fehler: '',
+  letztesBild: 0,       // wann ging das letzte Lagebild raus
+  taktrate: 1 / 20,     // 20 Lagebilder je Sekunde
+  mitspielerName: '',
+
+  // Für Tests: eine Verbindung, die einfach zurück in dieselbe Seite geht.
+  pruefleitung: null,
+
+  senden(obj) {
+    if (this.pruefleitung) { this.pruefleitung(obj); return; }
+    if (this.leitung && this.leitung.open) {
+      try { this.leitung.send(obj); } catch (e) { /* abgerissen */ }
+    }
+  },
+
+  // Kommt etwas an, landet es hier.
+  empfangen(obj) {
+    if (!obj || !obj.t) return;
+    if (obj.t === 'ein')    { gastEingabeUebernehmen(obj); return; }
+    if (obj.t === 'welt')   { weltbildUebernehmen(obj);    return; }
+    if (obj.t === 'karte')  { karteUebernehmen(obj);       return; }
+    if (obj.t === 'hallo')  { mitspielerBegruessen(obj);   return; }
+    if (obj.t === 'tschuess') { verbindungVerloren('Dein Mitspieler hat aufgehört.'); return; }
+  },
+
+  schliessen() {
+    try { if (this.leitung) this.leitung.close(); } catch (e) {}
+    try { if (this.peer) this.peer.destroy(); } catch (e) {}
+    this.an = false; this.istGast = false; this.verbunden = false;
+    this.peer = null; this.leitung = null; this.code = '';
+    this.pruefleitung = null;
+    mitspieler = null;
+  },
+};
+
+// Der Mitspieler - beim Gastgeber der echte zweite Pfeil, beim Gast das Abbild
+// des Gastgebers. null heißt: allein unterwegs.
+let mitspieler = null;
+
+// Wie viele spielen gerade mit? Danach richtet sich, wie viele Gegner kommen.
+function spielerZahl() { return NETZ.an && NETZ.verbunden ? 2 : 1; }
+
+// Ein Code, den man am Telefon vorlesen kann: keine Verwechslungen wie 0/O.
+function codeErzeugen() {
+  const zeichen = 'ACDEFGHJKLMNPQRTUVWXY349';
+  let c = '';
+  for (let i = 0; i < 6; i++) c += zeichen[Math.floor(Math.random() * zeichen.length)];
+  return c.slice(0, 3) + '-' + c.slice(3);
+}
+
+function peerIdVon(code) { return 'pfeilvskugeln-' + code.replace('-', '').toUpperCase(); }
+
+// PeerJS wird erst geladen, wenn man wirklich zusammen spielen will.
+let peerGeladen = false;
+function peerLaden() {
+  return new Promise((fertig, schiefgegangen) => {
+    if (peerGeladen || window.Peer) { peerGeladen = true; fertig(); return; }
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js';
+    s.onload = () => { peerGeladen = true; fertig(); };
+    s.onerror = () => schiefgegangen(new Error('PeerJS konnte nicht geladen werden'));
+    document.head.appendChild(s);
+  });
+}
+
+// Was der Gast in jedem Bild tut: sich selbst schon mal bewegen (damit es
+// sich flüssig anfühlt), seine Eingabe schicken und die Zeit weiterlaufen
+// lassen. Alles andere kommt vom Gastgeber.
+function gastBild(dt) {
+  const s = spieler;
+  let bx = tippBewegung.x, by = tippBewegung.y;
+  tippAuswerten();
+  bx += tippBewegung.x; by += tippBewegung.y;
+  if (tasten['arrowleft']  || tasten['a']) bx -= 1;
+  if (tasten['arrowright'] || tasten['d']) bx += 1;
+  if (tasten['arrowup']    || tasten['w']) by -= 1;
+  if (tasten['arrowdown']  || tasten['s']) by += 1;
+  const laenge = Math.hypot(bx, by);
+  if (laenge > 0)
+    bewegenMitMauern(s, bx / laenge, by / laenge, EINSTELLUNGEN.spielerTempo * dt);
+  s.x = grenze(s.x, s.r, WELT.b - s.r);
+  s.y = grenze(s.y, s.r, WELT.h - s.r);
+  kameraSetzen();
+  s.winkel = Math.atan2(mausWeltY() - s.y, mausWeltX() - s.x);
+
+  // Funken und Explosionen laufen auch beim Gast weiter - die sind nur Zierde.
+  for (const p of partikel) { p.x += p.vx * dt; p.y += p.vy * dt; p.leben -= dt; }
+  partikel = partikel.filter(p => p.leben > 0);
+  for (const e of explosionen) e.leben -= dt;
+  explosionen = explosionen.filter(e => e.leben > 0);
+  if (ruckeln > 0) ruckeln = Math.max(0, ruckeln - dt * 30);
+
+  NETZ.letztesBild += dt;
+  if (NETZ.letztesBild >= NETZ.taktrate) { NETZ.letztesBild = 0; gastEingabeSenden(); }
+}
+
+// Wer von beiden wurde getroffen?
+function trefferAn(wen, schaden, wodurch) {
+  if (wen === mitspieler) mitspielerTrifftEs(schaden);
+  else spielerTrifftEs(schaden, wodurch);
+}
+
+// --- Der Mitspieler auf der Seite des Gastgebers ---------------------------
+// Er läuft nach den Eingaben, die hereinkommen, und schießt mit seiner
+// eigenen Waffe. Damit dafür nicht der halbe Code doppelt geschrieben werden
+// muss, wird für einen Moment so getan, als wäre ER der Spieler - danach wird
+// alles sauber zurückgetauscht.
+function mitspielerAktualisieren(dt) {
+  const p = mitspieler;
+  if (!p || NETZ.istGast) return;
+
+  const laenge = Math.hypot(p.bx || 0, p.by || 0);
+  if (laenge > 0) {
+    const tempo = EINSTELLUNGEN.spielerTempo;
+    bewegenMitMauern(p, (p.bx || 0) / laenge, (p.by || 0) / laenge, tempo * dt);
+  }
+  p.x = grenze(p.x, p.r, WELT.b - p.r);
+  p.y = grenze(p.y, p.r, WELT.h - p.r);
+  if (p.unverwundbar > 0) p.unverwundbar -= dt;
+
+  // Schießen mit seiner Waffe, seiner Munition, seinem Nachladen.
+  const merkSpieler = spieler, merkWaffe = lauf.waffe, merkNachladen = lauf.nachladen;
+  const merkMunition = lauf.munition, merkHitze = lauf.hitze, merkUeber = lauf.ueberhitzt;
+  const merkLadung = lauf.ladung, merkMaus = maus.gedrueckt;
+
+  spieler = p;
+  lauf.waffe = p.waffe || 'pistole';
+  lauf.nachladen = p.nachladen || 0;
+  lauf.munition = p.munition || (p.munition = {});
+  lauf.hitze = p.hitze || 0;
+  lauf.ueberhitzt = !!p.ueberhitzt;
+  lauf.ladung = p.ladung || 0;
+  maus.gedrueckt = !!p.feuer;
+  try { schiessen(dt); } catch (e) { /* eine kaputte Waffe darf nicht alles anhalten */ }
+  p.nachladen = lauf.nachladen; p.hitze = lauf.hitze;
+  p.ueberhitzt = lauf.ueberhitzt; p.ladung = lauf.ladung;
+
+  spieler = merkSpieler; lauf.waffe = merkWaffe; lauf.nachladen = merkNachladen;
+  lauf.munition = merkMunition; lauf.hitze = merkHitze; lauf.ueberhitzt = merkUeber;
+  lauf.ladung = merkLadung; maus.gedrueckt = merkMaus;
+}
+
+// Wer von euch beiden ist diesem Punkt am nächsten? Danach richten sich die
+// Gegner - sonst würden sie den Gast komplett übersehen.
+function naechsterSpieler(x, y) {
+  if (!mitspieler || NETZ.istGast || mitspieler.hp <= 0) return spieler;
+  const a = Math.hypot(spieler.x - x, spieler.y - y);
+  const b = Math.hypot(mitspieler.x - x, mitspieler.y - y);
+  return b < a ? mitspieler : spieler;
+}
+
+// Der Mitspieler wird getroffen.
+function mitspielerTrifftEs(schaden) {
+  const p = mitspieler;
+  if (!p || p.unverwundbar > 0 || p.hp <= 0) return;
+  p.hp = Math.max(0, p.hp - schaden);
+  p.unverwundbar = EINSTELLUNGEN.unverwundbarkeit;
+  funken(p.x, p.y, '#7cff9d', 20);
+  if (p.hp <= 0) {
+    hinweisZeigen('💀 Dein Mitspieler ist gefallen — er kommt im nächsten Level zurück.', '#ff5c7a');
+    funken(p.x, p.y, '#ff5c7a', 40);
+  }
+}
+
+// --- Was übertragen wird ----------------------------------------------------
+// Damit die Nachrichten klein bleiben, schicken wir Zahlen statt Namen.
+// Diese Liste gibt jedem Gegnertyp eine feste Nummer, die beide kennen.
+const ARTEN_LISTE = Object.keys(GEGNERARTEN).map(k => GEGNERARTEN[k])
+                    .concat(BOSSARTEN, BOSSARTEN_SPAET);
+function artNummer(art) { const i = ARTEN_LISTE.indexOf(art); return i < 0 ? 0 : i; }
+function artVonNummer(n) { return ARTEN_LISTE[n] || ARTEN_LISTE[0]; }
+
+// Der Gastgeber schickt 20-mal je Sekunde ein Bild der Lage.
+function weltbildSenden() {
+  const p = mitspieler;
+  NETZ.senden({
+    t: 'welt',
+    l: lauf.level,
+    hp: Math.round(lauf.hp), mhp: Math.round(p ? p.hp : 0),
+    // Gastgeber und Gast: Ort und Blickrichtung
+    a: [Math.round(spieler.x), Math.round(spieler.y), +spieler.winkel.toFixed(2)],
+    b: p ? [Math.round(p.x), Math.round(p.y), +p.winkel.toFixed(2)] : null,
+    g: gegner.map(g => [Math.round(g.x), Math.round(g.y), Math.round(g.r), artNummer(g.art),
+                        Math.round(g.leben), Math.round(g.maxLeben),
+                        (g.boss ? 1 : 0) | (g.mini ? 2 : 0) | (g.treffer > 0 ? 4 : 0) |
+                        (g.stein > 0 ? 8 : 0) | (g.verbuendet > 0 ? 16 : 0)]),
+    s: schuesse.filter(k => !k.tot).slice(0, 90).map(k =>
+         [Math.round(k.x), Math.round(k.y), Math.round(k.r),
+          k.chakram ? 3 : k.mine ? 2 : (k.sprengradius || k.zielsuchend) ? 1 : 0,
+          +(k.winkel || 0).toFixed(2)]),
+    q: gegnerSchuesse.filter(k => !k.tot).slice(0, 90).map(k =>
+         [Math.round(k.x), Math.round(k.y), Math.round(k.r),
+          k.liegt ? 2 : k.rakete ? 1 : 0, +(k.winkel || 0).toFixed(2)]),
+  });
+}
+
+// Der Gast übernimmt es und zeichnet danach einfach, was er bekommen hat.
+function weltbildUebernehmen(w) {
+  if (!NETZ.istGast) return;
+  // Solange noch keine Karte da ist, gibt es auch keinen eigenen Pfeil -
+  // dann warten wir einfach auf die Karte.
+  if (!spieler) return;
+  lauf.level = w.l;
+  lauf.hp = w.hp !== undefined ? w.mhp : lauf.hp;      // der Gast ist Spieler B
+  if (w.b) {
+    // Die eigene Stelle vom Gastgeber übernehmen - aber sanft, damit es
+    // nicht ruckelt, wenn eine Nachricht unterwegs verlorengeht.
+    const dx = w.b[0] - spieler.x, dy = w.b[1] - spieler.y;
+    if (Math.hypot(dx, dy) > 140) { spieler.x = w.b[0]; spieler.y = w.b[1]; }
+    else { spieler.x += dx * .35; spieler.y += dy * .35; }
+  }
+  if (!mitspieler) mitspieler = { x: 0, y: 0, winkel: 0, hp: 100, r: EINSTELLUNGEN.spielerRadius };
+  mitspieler.x = w.a[0]; mitspieler.y = w.a[1]; mitspieler.winkel = w.a[2];
+  mitspieler.hp = w.hp;
+
+  gegner = w.g.map(e => {
+    const art = artVonNummer(e[3]);
+    return { x: e[0], y: e[1], r: e[2], art, artName: '', boss: !!(e[6] & 1), mini: !!(e[6] & 2),
+             leben: e[4], maxLeben: e[5], treffer: (e[6] & 4) ? .1 : 0,
+             stein: (e[6] & 8) ? 1 : 0, verbuendet: (e[6] & 16) ? 1 : 0,
+             winkel: 0, eigenDrehung: 0, frost: 0, nur_abbild: true };
+  });
+  schuesse = w.s.map(k => ({ x: k[0], y: k[1], r: k[2], winkel: k[4],
+                             sprengradius: k[3] === 1 ? 100 : 0, mine: k[3] === 2,
+                             chakram: k[3] === 3 ? {} : null, scharf: k[3] === 2,
+                             zuendradius: 0, getroffen: [], nur_abbild: true }));
+  gegnerSchuesse = w.q.map(k => ({ x: k[0], y: k[1], r: k[2], winkel: k[4],
+                                   rakete: k[3] === 1, liegt: k[3] === 2 ? 1 : 0,
+                                   restzeit: 2, nur_abbild: true }));
+  hudAktualisieren();
+}
+
+// --- Der Gast schickt, was er tut -------------------------------------------
+function gastEingabeSenden() {
+  let bx = tippBewegung.x, by = tippBewegung.y;
+  if (tasten['arrowleft']  || tasten['a']) bx -= 1;
+  if (tasten['arrowright'] || tasten['d']) bx += 1;
+  if (tasten['arrowup']    || tasten['w']) by -= 1;
+  if (tasten['arrowdown']  || tasten['s']) by += 1;
+  NETZ.senden({ t: 'ein',
+    bx: +bx.toFixed(2), by: +by.toFixed(2),
+    w: +spieler.winkel.toFixed(2),
+    f: maus.gedrueckt ? 1 : 0,
+    k: lauf.waffe });
+}
+
+// --- Der Gastgeber nimmt sie entgegen ---------------------------------------
+function gastEingabeUebernehmen(e) {
+  if (NETZ.istGast || !mitspieler) return;
+  mitspieler.bx = e.bx; mitspieler.by = e.by;
+  mitspieler.winkel = e.w;
+  mitspieler.feuer = !!e.f;
+  if (WAFFEN[e.k]) mitspieler.waffe = e.k;
+}
+
+// --- Die Karte muss bei beiden gleich sein ---------------------------------
+function karteSenden() {
+  NETZ.senden({ t: 'karte', l: lauf.level,
+    biom: aktuelleKarte.biom, dunkel: !!aktuelleKarte.dunkel,
+    name: aktuelleKarte.name, nummer: aktuelleKarte.nummer,
+    m: hindernisse.map(h => [Math.round(h.x), Math.round(h.y), Math.round(h.b), Math.round(h.h)]) });
+}
+
+function karteUebernehmen(k) {
+  if (!NETZ.istGast) return;
+  lauf.level = k.l;
+  hindernisse = k.m.map(h => ({ x: h[0], y: h[1], b: h[2], h: h[3] }));
+
+  // Der Gast baut sich seinen eigenen Pfeil - wo genau, sagt ihm gleich
+  // das erste Lagebild.
+  spieler = { x: WELT.b / 2, y: WELT.h / 2, r: EINSTELLUNGEN.spielerRadius,
+              winkel: 0, unverwundbar: 1.5, schild: maxSchild(),
+              schildTimer: schildLadezeit(), schockAbkling: 0, vx: 0, vy: 0 };
+  ausMauerSchieben(spieler);
+  kameraSetzen();
+  lauf.hp = 100;
+  lauf.nachladen = 0; lauf.hitze = 0; lauf.ueberhitzt = false; lauf.ladung = 0;
+  lauf.abkling = {};
+  munitionFuellen();
+  ausruestungPruefen();
+  drohnen = [];
+  aktuelleKarte = { biom: k.biom, dunkel: k.dunkel, name: k.name, nummer: k.nummer,
+                    deko: [], flecken: fleckenStreuen(), mauern: hindernisse,
+                    bauen() { return this.mauern; } };
+  aktuelleKarte.deko = dekoStreuen(biomVon(k.biom), hindernisse);
+  bodenFuer = '';
+  rasterAufbauen();
+  schuesse = []; gegnerSchuesse = []; partikel = []; explosionen = [];
+  blitze = []; heilstrahlen = []; einschlaege = []; tuerme = [];
+  zustand = 'spiel';
+  overlay.classList.add('aus');
+  overlay.classList.remove('menue');
+  document.getElementById('hud').classList.remove('aus');
+  MUSIK.spiele(k.l % 10 === 0 ? 'boss' : (k.dunkel ? 'dunkel' : 'level'));
+  hudAktualisieren();
+}
+
+// --- Spiel eröffnen (Gastgeber) --------------------------------------------
+async function spielEroeffnen(codeVorgabe) {
+  zeigeLobby('verbinde');
+  try { await peerLaden(); }
+  catch (e) { zeigeLobby('fehler', 'Die Verbindungssoftware ließ sich nicht laden. Bist du online?'); return; }
+
+  NETZ.code = codeVorgabe || codeErzeugen();
+  NETZ.an = true; NETZ.istGast = false; NETZ.verbunden = false;
+  NETZ.peer = new Peer(peerIdVon(NETZ.code));
+
+  NETZ.peer.on('open', () => zeigeLobby('warten'));
+  NETZ.peer.on('error', e => {
+    // Code schon vergeben? Dann einfach einen neuen nehmen.
+    if (e && e.type === 'unavailable-id') { NETZ.schliessen(); spielEroeffnen(); return; }
+    zeigeLobby('fehler', 'Verbindung fehlgeschlagen: ' + (e && e.type ? e.type : e));
+  });
+  NETZ.peer.on('connection', leitung => {
+    NETZ.leitung = leitung;
+    leitung.on('open', () => {
+      NETZ.verbunden = true;
+      leitung.send({ t: 'hallo', name: 'Gastgeber' });
+      zeigeLobby('bereit');
+    });
+    leitung.on('data', d => NETZ.empfangen(d));
+    leitung.on('close', () => verbindungVerloren('Dein Mitspieler ist weg.'));
+  });
+}
+
+// --- Einem Spiel beitreten (Gast) -------------------------------------------
+async function spielBeitreten(code) {
+  code = (code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (code.length < 6) { zeigeLobby('fehler', 'Der Code besteht aus sechs Zeichen.'); return; }
+  zeigeLobby('verbinde');
+  try { await peerLaden(); }
+  catch (e) { zeigeLobby('fehler', 'Die Verbindungssoftware ließ sich nicht laden. Bist du online?'); return; }
+
+  NETZ.an = true; NETZ.istGast = true; NETZ.verbunden = false;
+  NETZ.code = code.slice(0, 3) + '-' + code.slice(3);
+  NETZ.peer = new Peer();
+
+  NETZ.peer.on('open', () => {
+    const leitung = NETZ.peer.connect(peerIdVon(code), { reliable: false });
+    NETZ.leitung = leitung;
+    leitung.on('open', () => {
+      NETZ.verbunden = true;
+      leitung.send({ t: 'hallo', name: 'Gast' });
+      zeigeLobby('bereit');
+    });
+    leitung.on('data', d => NETZ.empfangen(d));
+    leitung.on('close', () => verbindungVerloren('Die Verbindung ist abgerissen.'));
+    leitung.on('error', () => zeigeLobby('fehler', 'Niemand mit diesem Code gefunden.'));
+  });
+  NETZ.peer.on('error', e => {
+    const art = e && e.type ? e.type : '';
+    zeigeLobby('fehler', art === 'peer-unavailable'
+      ? 'Unter diesem Code wartet gerade niemand. Tippfehler?'
+      : 'Verbindung fehlgeschlagen: ' + art);
+  });
+}
+
+function mitspielerBegruessen(obj) {
+  NETZ.mitspielerName = obj.name || 'Mitspieler';
+  NETZ.verbunden = true;
+  if (zustand === 'lobby') zeigeLobby('bereit');
+}
+
+function verbindungVerloren(grund) {
+  if (!NETZ.an) return;
+  NETZ.schliessen();
+  hinweisZeigen('🔌 ' + grund + ' Du spielst allein weiter.', '#ff5c7a');
+  hudAktualisieren();
+}
+
+// --- Der Warteraum ----------------------------------------------------------
+function zeigeLobby(phase, text) {
+  zustand = 'lobby';
+  MUSIK.spiele('menue');
+  overlay.classList.remove('aus');
+  overlay.classList.remove('menue');
+  document.getElementById('hud').classList.add('aus');
+  karte.className = 'karte';
+
+  let inhalt;
+  if (phase === 'start') {
+    inhalt = `
+      <p class="unterzeile">Spielt zu zweit durch dieselben Level. Einer eröffnet
+         das Spiel und gibt den Code weiter, der andere tippt ihn ein.
+         Ihr braucht kein Konto und müsst nichts installieren.</p>
+      <div class="knopfzeile">
+        <button class="knopf gross" id="eroeffnen">🎮 Spiel eröffnen</button>
+      </div>
+      <p class="unterzeile" style="margin:18px 0 8px">…oder einem Spiel beitreten:</p>
+      <div class="lobbyzeile">
+        <input id="codefeld" class="codefeld" placeholder="ABC-123"
+               maxlength="7" autocomplete="off" autocapitalize="characters" spellcheck="false">
+        <button class="knopf" id="beitreten">Beitreten</button>
+      </div>
+      <p class="unterzeile" style="font-size:11.5px;margin-top:14px">
+        Zu zweit kommen etwa doppelt so viele Gegner — ihr habt beide zu tun.
+        Jeder spielt mit seinen eigenen Waffen und seinem eigenen Fortschritt.</p>`;
+  } else if (phase === 'verbinde') {
+    inhalt = `<p class="unterzeile">Verbinde …</p>`;
+  } else if (phase === 'warten') {
+    inhalt = `
+      <p class="unterzeile">Gib deinem Mitspieler diesen Code:</p>
+      <div class="grosscode" id="codeanzeige">${NETZ.code}</div>
+      <div class="knopfzeile">
+        <button class="knopf" id="codekopieren">📋 Code kopieren</button>
+      </div>
+      <p class="unterzeile" style="margin-top:18px">⏳ Warte auf deinen Mitspieler …</p>`;
+  } else if (phase === 'bereit') {
+    inhalt = `
+      <p class="unterzeile" style="color:#7cff9d;font-size:17px">✅ Verbunden!</p>
+      <p class="unterzeile">${NETZ.istGast
+        ? 'Der Gastgeber startet das Spiel. Gleich geht es los.'
+        : 'Ihr seid zu zweit. Du bestimmst, wann es losgeht und in welche Stufe.'}</p>
+      ${NETZ.istGast ? '' : `<div class="knopfzeile">
+        <button class="knopf gross" id="losgehts">▶ Zusammen losspielen</button>
+      </div>`}`;
+  } else {
+    inhalt = `<p class="unterzeile" style="color:#ff5c7a">${text || 'Etwas ist schiefgegangen.'}</p>
+      <div class="knopfzeile"><button class="knopf" id="nochmal">Nochmal versuchen</button></div>`;
+  }
+
+  karte.innerHTML = `<h2>👥 Zusammen spielen</h2>${inhalt}
+    <div class="knopfzeile" style="margin-top:20px">
+      <button class="knopf leise" id="lobbyzurueck">Zurück zum Menü</button>
+    </div>`;
+
+  const k = id => document.getElementById(id);
+  if (k('eroeffnen'))  k('eroeffnen').onclick  = () => { KLANG.starten(); spielEroeffnen(); };
+  if (k('beitreten'))  k('beitreten').onclick  = () => { KLANG.starten(); spielBeitreten(k('codefeld').value); };
+  if (k('codefeld'))   k('codefeld').onkeydown = e => { if (e.key === 'Enter') spielBeitreten(k('codefeld').value); };
+  if (k('nochmal'))    k('nochmal').onclick    = () => { NETZ.schliessen(); zeigeLobby('start'); };
+  if (k('losgehts'))   k('losgehts').onclick   = () => zusammenStarten();
+  if (k('codekopieren')) k('codekopieren').onclick = () => {
+    if (navigator.clipboard) navigator.clipboard.writeText(NETZ.code).catch(() => {});
+    hinweisZeigen('📋 Code kopiert: ' + NETZ.code, '#7cff9d');
+  };
+  k('lobbyzurueck').onclick = () => { NETZ.schliessen(); zeigeMenu(); };
+}
+
+// Der Gastgeber drückt auf Start - beide landen im selben Level.
+function zusammenStarten() {
+  if (NETZ.istGast) return;
+  neuerLauf();
+}
+
+// ============================================================================
 // Eingabe
 // ============================================================================
 addEventListener('keydown', e => {
@@ -3221,7 +3723,8 @@ function neuerBoss(level) {
   const topf = bossPool(level);
   const art = topf[(Math.floor(level / 10) - 1) % topf.length];
   const p = freierPlatz(620, 720);
-  const leben = Math.round(EINSTELLUNGEN.bossLeben(level) * art.lebenF);
+  const leben = Math.round(EINSTELLUNGEN.bossLeben(level) * art.lebenF
+                           * (spielerZahl() === 2 ? EINSTELLUNGEN.koopBossLeben : 1));
   return {
     x: p.x, y: p.y, r: art.r, boss: true, art,
     leben, maxLeben: leben,
@@ -3472,7 +3975,11 @@ function levelStarten(n) {
   } else {
     // Bunt gemischt aus allen Typen, die es in diesem Level schon gibt.
     const arten = verfuegbareArten(n);
-    for (let i = 0; i < EINSTELLUNGEN.gegnerProLevel(n); i++)
+    // Zu zweit kommen fast doppelt so viele - aber jeder einzelne bleibt
+    // genauso zäh wie allein. So habt ihr beide zu tun, ohne dass es unfair wird.
+    const anzahlGegner = Math.round(EINSTELLUNGEN.gegnerProLevel(n)
+                                    * (spielerZahl() === 2 ? EINSTELLUNGEN.koopGegnerFaktor : 1));
+    for (let i = 0; i < anzahlGegner; i++)
       gegner.push(neuerGegner(n, arten[Math.floor(Math.random() * arten.length)]));
 
     // Und mit etwas Glück ein Mini-Boss obendrauf.
@@ -3485,6 +3992,23 @@ function levelStarten(n) {
   }
 
   auftragAufbauen();
+
+  // Zusammen spielen: Der zweite Pfeil startet neben dir, mit vollem Leben.
+  if (NETZ.an && !NETZ.istGast) {
+    mitspieler = {
+      x: grenze(spieler.x + 70, 60, WELT.b - 60), y: spieler.y,
+      r: EINSTELLUNGEN.spielerRadius, winkel: 0, hp: 100, unverwundbar: 1.5,
+      bx: 0, by: 0, feuer: false, waffe: 'pistole', nachladen: 0,
+      hitze: 0, ueberhitzt: false, ladung: 0, munition: {},
+    };
+    ausMauerSchieben(mitspieler);
+    // Der Gast bekommt genug Munition für alle Waffen, die er dabeihat.
+    for (const id in WAFFEN) {
+      const m = WAFFEN[id].magazin;
+      if (m) mitspieler.munition[id] = m;
+    }
+    if (NETZ.verbunden) { karteSenden(); weltbildSenden(); }
+  }
 
   zustand = 'spiel';
   overlay.classList.add('aus');
@@ -4855,8 +5379,15 @@ const inDerWelt = k => k.x > -60 && k.x < WELT.b + 60 && k.y > -60 && k.y < WELT
 // Ein Bild weiterrechnen
 // ============================================================================
 function aktualisieren(dt) {
+  // Als Gast rechnen wir nichts selbst - der Gastgeber schickt die Lage.
+  // Wir bewegen nur unseren eigenen Pfeil vorweg, damit es sich flüssig
+  // anfühlt, und melden ihm, was wir gerade tun.
+  if (NETZ.an && NETZ.istGast) { gastBild(dt); return; }
+
   const s = spieler;
   const level = lauf.level;
+
+  if (NETZ.an && !NETZ.istGast) mitspielerAktualisieren(dt);
 
   // Im Schießstand messen wir in Fenstern von fünf Sekunden, wie viel
   // Schaden die gewählte Waffe anrichtet.
@@ -5118,6 +5649,10 @@ function aktualisieren(dt) {
   const bedrohung = bedrohungDurchSpieler();
 
   for (const g of gegner) {
+    // Zu zweit richtet sich jeder Gegner nach dem, der ihm am nächsten ist.
+    // Durch diese eine Zeile gilt das für alles, was danach kommt: sehen,
+    // zielen, umkreisen, ausweichen.
+    const s = naechsterSpieler(g.x, g.y);
     if (g.treffer > 0) g.treffer -= gdt;
     // Steht ein übernommener Gegner näher als du? Dann gilt der als Ziel -
     // sonst wäre der Gehirn-Hacker nur ein hübscher Farbwechsel.
@@ -5512,8 +6047,8 @@ function aktualisieren(dt) {
 
     if (d < g.r + s.r) {
       if (g.art.explodiert) g.leben = 0;        // Bomber geht dabei selbst hoch
-      else spielerTrifftEs(schadenStufe(g.art.beruehrung || 12, level),
-                            (g.boss ? '' : 'Ein ') + g.art.name + (g.boss ? '' : ' hat dich gerammt'));
+      else trefferAn(s, schadenStufe(g.art.beruehrung || 12, level),
+                     (g.boss ? '' : 'Ein ') + g.art.name + (g.boss ? '' : ' hat dich gerammt'));
     }
   }
 
@@ -5628,6 +6163,13 @@ function aktualisieren(dt) {
                                          : 'Ein Schuss hat dich erwischt');
       continue;
     }
+    // ... und den Mitspieler genauso
+    if (mitspieler && !NETZ.istGast && mitspieler.hp > 0 &&
+        Math.hypot(k.x - mitspieler.x, k.y - mitspieler.y) < k.r + mitspieler.r) {
+      k.tot = true;
+      mitspielerTrifftEs(k.schaden);
+      continue;
+    }
     // Übernommene Gegner fangen die Schüsse ihrer früheren Kameraden ab.
     let getroffen = false;
     for (const v of gegner) {
@@ -5698,6 +6240,12 @@ function aktualisieren(dt) {
   hudGegnerAktualisieren();
   if ((lauf.faehigkeitPlaetze || []).length) faehigkeitsleisteAktualisieren();
   auftragAktualisieren(dt);
+
+  // 20-mal je Sekunde ein Lagebild an den Mitspieler.
+  if (NETZ.an && NETZ.verbunden && !NETZ.istGast) {
+    NETZ.letztesBild += dt;
+    if (NETZ.letztesBild >= NETZ.taktrate) { NETZ.letztesBild = 0; weltbildSenden(); }
+  }
   // Im Schießstand ist das Level nie zu Ende - da wird ja nur geübt.
   // Bei einem laufenden Auftrag zählt der Auftrag, nicht das leere Feld.
   if (!lauf.uebung && gegner.length === 0 &&
@@ -6257,6 +6805,25 @@ function zeichnen(dt) {
     ctx.setLineDash([]);
     ctx.fillStyle = 'rgba(255,92,122,.5)';
     ctx.beginPath(); ctx.arc(ex, ey, 4, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // Der Mitspieler - grün, damit man euch auseinanderhält
+  if (NETZ.an && mitspieler && mitspieler.hp > 0) {
+    const p = mitspieler;
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.winkel);
+    ctx.fillStyle = '#7cff9d';
+    ctx.beginPath();
+    ctx.moveTo(20, 0); ctx.lineTo(-13, 12); ctx.lineTo(-6, 0); ctx.lineTo(-13, -12);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+    // Kleiner Lebensbalken über ihm
+    const anteil = Math.max(0, Math.min(1, p.hp / 100));
+    ctx.fillStyle = 'rgba(0,0,0,.55)';
+    ctx.fillRect(p.x - 22, p.y - 32, 44, 5);
+    ctx.fillStyle = anteil > .4 ? '#7cff9d' : '#ff5c7a';
+    ctx.fillRect(p.x - 22, p.y - 32, 44 * anteil, 5);
   }
 
   // Kisten und Sender eines Auftrags
@@ -7142,6 +7709,13 @@ function hudAktualisieren() {
   const gEl = document.getElementById('hudGlut');
   gEl.innerHTML = '🔥 <b>' + (fortschritt.glut || 0) + '</b>';
   gEl.style.display = (fortschritt.hoechsteStufe || 1) >= 4 || fortschritt.glut > 0 ? '' : 'none';
+  const mp = document.getElementById('hudMitspieler');
+  if (mp) {
+    const zeigen = NETZ.an && NETZ.verbunden && mitspieler;
+    mp.style.display = zeigen ? '' : 'none';
+    if (zeigen) mp.innerHTML = '👥 <b class="mitspielerhp">' +
+      Math.max(0, Math.ceil(mitspieler.hp)) + '</b>';
+  }
   document.getElementById('hudWaffe').textContent = WAFFEN[lauf.waffe].name;
   document.getElementById('hudTon').textContent = KLANG.an ? '🔊' : '🔇';
   const pk = document.getElementById('hudPause');
@@ -7252,6 +7826,7 @@ function zeigeMenu() {
     <div class="knopfzeile" style="margin-top:10px">
       <button class="knopf leise" id="bosse">Bosse ansehen 👁</button>
       <button class="knopf leise" id="schiessstand">🎯 Schießstand</button>
+      <button class="knopf leise" id="zusammen">👥 Zusammen spielen</button>
       <button class="knopf leise" id="rangliste">🏆 Bestenliste</button>
     </div>
     ${TIPPGERAET ? `<div class="knopfzeile" style="margin-top:10px">
@@ -7282,6 +7857,7 @@ function zeigeMenu() {
   document.getElementById('bosse').onclick = () => zeigeBossWahl();
   document.getElementById('rangliste').onclick = zeigeBestenliste;
   document.getElementById('schiessstand').onclick = zeigeSchiessstand;
+  document.getElementById('zusammen').onclick = () => { KLANG.starten(); zeigeLobby('start'); };
   const stk = document.getElementById('steuerung');
   if (stk) stk.onclick = () => {
     fortschritt.zielhilfe = !fortschritt.zielhilfe;
@@ -7844,15 +8420,24 @@ function ausruestungHtml() {
             </button>`;
   }).join('');
 
-  return `<div class="ausruestung">
-    <div class="awkopf">🎒 Rucksack für Level ${lauf.level} —
-      <b>${last} von ${grenze2} kg</b> beladen.
-      Schwere Waffen haben wenig Schuss, leichte viel. Die Pistole wiegt nichts
-      und geht nie aus.</div>
-    <div class="lastbalken"><i style="width:${(anteil * 100).toFixed(1)}%;
-      background:${anteil > .9 ? '#ff5c7a' : anteil > .7 ? '#ffd25c' : '#7cff9d'}"></i></div>
+  // Auf dem Handy ist die Waffenliste der mit Abstand längste Block im Laden.
+  // Deshalb steckt sie dort in einer Klappe: Zu sehen ist nur, wie voll der
+  // Rucksack ist - antippen klappt ihn auf. Am Rechner ist er immer offen.
+  const schmal = B < 900;
+  const balken = `<div class="lastbalken"><i style="width:${(anteil * 100).toFixed(1)}%;
+      background:${anteil > .9 ? '#ff5c7a' : anteil > .7 ? '#ffd25c' : '#7cff9d'}"></i></div>`;
+
+  return `<details class="ausruestung" ${schmal ? '' : 'open'}>
+    <summary class="awkopf">
+      <span class="awzeile">🎒 <b>${last} von ${grenze2} kg</b>
+        · ${gewaehlt.length} ${gewaehlt.length === 1 ? 'Waffe' : 'Waffen'} dabei
+        <span class="awtipp">${schmal ? 'antippen zum Umpacken' : 'Level ' + lauf.level}</span></span>
+      ${balken}
+    </summary>
+    <div class="awtext">Schwere Waffen haben wenig Schuss, leichte viel.
+      Die Pistole wiegt nichts und geht nie aus.</div>
     <div class="awreihe">${knoepfe}</div>
-  </div>`;
+  </details>`;
 }
 
 function ausruestungUmschalten(id) {
@@ -8140,11 +8725,17 @@ function zeigeLaden(verdient, warBoss) {
 
   const naechsteKarte = karteFuer(lauf.level);
   const naechstesBiom = biomVon(naechsteKarte.biom);
-  const kartenHinweis = `<p class="unterzeile" style="margin:0 0 12px">
-      ${naechstesBiom.symbol} Nächste Landschaft: <b style="color:#cfdcf0">${naechstesBiom.name}</b>
-      — ${naechstesBiom.info}<br>
-      🗺️ Karte: <b style="color:#cfdcf0">${naechsteKarte.name} #${naechsteKarte.nummer}</b>
-      — ${naechsteKarte.info}${naechsteKarte.dunkel ? ' <b style="color:#5fd0ff">Und es ist stockdunkel.</b>' : ''}</p>`;
+  // Auf dem Handy nur die Namen - die Beschreibungen kosten dort drei Zeilen.
+  const kartenHinweis = B < 900
+    ? `<p class="unterzeile" style="margin:0 0 10px;font-size:12px">
+        ${naechstesBiom.symbol} <b style="color:#cfdcf0">${naechstesBiom.name}</b>
+        · 🗺️ <b style="color:#cfdcf0">${naechsteKarte.name}</b>${
+        naechsteKarte.dunkel ? ' · <b style="color:#5fd0ff">stockdunkel</b>' : ''}</p>`
+    : `<p class="unterzeile" style="margin:0 0 12px">
+        ${naechstesBiom.symbol} Nächste Landschaft: <b style="color:#cfdcf0">${naechstesBiom.name}</b>
+        — ${naechstesBiom.info}<br>
+        🗺️ Karte: <b style="color:#cfdcf0">${naechsteKarte.name} #${naechsteKarte.nummer}</b>
+        — ${naechsteKarte.info}${naechsteKarte.dunkel ? ' <b style="color:#5fd0ff">Und es ist stockdunkel.</b>' : ''}</p>`;
 
   const heilPreis = heilKosten();
   const voll      = lauf.hp >= maxHp();
@@ -8177,7 +8768,7 @@ function zeigeLaden(verdient, warBoss) {
   if (ladenReiter === 'arsenal' && !arsenalOffen) ladenReiter = 'forschung';
   const reiter = `<div class="reiter">
       <button id="reiterForschung" class="${ladenReiter === 'forschung' ? 'aktiv' : ''}">
-        🔬 Forschungsbaum</button>
+        🔬 ${B < 900 ? 'Baum' : 'Forschungsbaum'}</button>
       <button id="reiterLabor" class="${ladenReiter === 'labor' ? 'aktiv' : ''}"
         ${laborOffen ? '' : 'disabled'}>
         ⚗ Labor${laborOffen ? '' : ' (ab Stufe 2)'}</button>
