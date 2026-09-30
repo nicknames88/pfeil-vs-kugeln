@@ -3105,9 +3105,8 @@ function peerLaden() {
 // lassen. Alles andere kommt vom Gastgeber.
 function gastBild(dt) {
   const s = spieler;
-  let bx = tippBewegung.x, by = tippBewegung.y;
   tippAuswerten();
-  bx += tippBewegung.x; by += tippBewegung.y;
+  let bx = tippBewegung.x, by = tippBewegung.y;
   if (tasten['arrowleft']  || tasten['a']) bx -= 1;
   if (tasten['arrowright'] || tasten['d']) bx += 1;
   if (tasten['arrowup']    || tasten['w']) by -= 1;
@@ -3119,6 +3118,29 @@ function gastBild(dt) {
   s.y = grenze(s.y, s.r, WELT.h - s.r);
   kameraSetzen();
   s.winkel = Math.atan2(mausWeltY() - s.y, mausWeltX() - s.x);
+
+  // Die eigenen Zeitgeber müssen auch beim Gast ablaufen - sonst blinkt der
+  // eigene Pfeil ewig vor sich hin und ist damit für immer unsichtbar.
+  if (s.unverwundbar > 0) s.unverwundbar = Math.max(0, s.unverwundbar - dt);
+  if (s.schockAbkling > 0) s.schockAbkling -= dt;
+
+  // Zwischen zwei Lagebildern rücken Gegner und Mitspieler weiter, statt zu
+  // springen. 20 Nachrichten je Sekunde, aber 60 Bilder - ohne das ruckelt es.
+  const zug = Math.min(1, dt * 14);
+  for (const g of gegner) {
+    if (g.zielX === undefined) continue;
+    g.x += (g.zielX - g.x) * zug;
+    g.y += (g.zielY - g.y) * zug;
+    g.eigenDrehung += dt * .7;
+    if (g.treffer > 0) g.treffer -= dt;
+  }
+  if (mitspieler && mitspieler.zielX !== undefined) {
+    mitspieler.x += (mitspieler.zielX - mitspieler.x) * zug;
+    mitspieler.y += (mitspieler.zielY - mitspieler.y) * zug;
+  }
+  // Schüsse fliegen mit ihrem eigenen Tempo weiter.
+  for (const k of schuesse)      { k.x += (k.vx || 0) * dt; k.y += (k.vy || 0) * dt; }
+  for (const k of gegnerSchuesse) { k.x += (k.vx || 0) * dt; k.y += (k.vy || 0) * dt; }
 
   // Funken und Explosionen laufen auch beim Gast weiter - die sind nur Zierde.
   for (const p of partikel) { p.x += p.vx * dt; p.y += p.vy * dt; p.leben -= dt; }
@@ -3220,14 +3242,18 @@ function weltbildSenden() {
     g: gegner.map(g => [Math.round(g.x), Math.round(g.y), Math.round(g.r), artNummer(g.art),
                         Math.round(g.leben), Math.round(g.maxLeben),
                         (g.boss ? 1 : 0) | (g.mini ? 2 : 0) | (g.treffer > 0 ? 4 : 0) |
-                        (g.stein > 0 ? 8 : 0) | (g.verbuendet > 0 ? 16 : 0)]),
+                        (g.stein > 0 ? 8 : 0) | (g.verbuendet > 0 ? 16 : 0),
+                        g.nr || 0]),
+    // Bei den Schüssen kommt das Tempo mit - damit kann der Gast sie zwischen
+    // zwei Lagebildern selbst weiterfliegen lassen, statt sie springen zu sehen.
     s: schuesse.filter(k => !k.tot).slice(0, 90).map(k =>
          [Math.round(k.x), Math.round(k.y), Math.round(k.r),
           k.chakram ? 3 : k.mine ? 2 : (k.sprengradius || k.zielsuchend) ? 1 : 0,
-          +(k.winkel || 0).toFixed(2)]),
+          +(k.winkel || 0).toFixed(2), Math.round(k.vx || 0), Math.round(k.vy || 0)]),
     q: gegnerSchuesse.filter(k => !k.tot).slice(0, 90).map(k =>
          [Math.round(k.x), Math.round(k.y), Math.round(k.r),
-          k.liegt ? 2 : k.rakete ? 1 : 0, +(k.winkel || 0).toFixed(2)]),
+          k.liegt ? 2 : k.rakete ? 1 : 0, +(k.winkel || 0).toFixed(2),
+          Math.round(k.vx || 0), Math.round(k.vy || 0)]),
   });
 }
 
@@ -3236,35 +3262,54 @@ function weltbildUebernehmen(w) {
   if (!NETZ.istGast) return;
   // Solange noch keine Karte da ist, gibt es auch keinen eigenen Pfeil -
   // dann warten wir einfach auf die Karte.
-  if (!spieler) return;
+  if (!spieler || !gegner) return;
   lauf.level = w.l;
-  lauf.hp = w.hp !== undefined ? w.mhp : lauf.hp;      // der Gast ist Spieler B
+  lauf.hp = w.mhp;                       // der Gast ist Spieler B
+
+  // Die eigene Stelle vom Gastgeber übernehmen - aber nur sanft nachziehen,
+  // sonst zerrt es bei jedem Lagebild am eigenen Pfeil.
   if (w.b) {
-    // Die eigene Stelle vom Gastgeber übernehmen - aber sanft, damit es
-    // nicht ruckelt, wenn eine Nachricht unterwegs verlorengeht.
     const dx = w.b[0] - spieler.x, dy = w.b[1] - spieler.y;
-    if (Math.hypot(dx, dy) > 140) { spieler.x = w.b[0]; spieler.y = w.b[1]; }
-    else { spieler.x += dx * .35; spieler.y += dy * .35; }
+    if (Math.hypot(dx, dy) > 200) { spieler.x = w.b[0]; spieler.y = w.b[1]; }
+    else { spieler.x += dx * .18; spieler.y += dy * .18; }
   }
-  if (!mitspieler) mitspieler = { x: 0, y: 0, winkel: 0, hp: 100, r: EINSTELLUNGEN.spielerRadius };
-  mitspieler.x = w.a[0]; mitspieler.y = w.a[1]; mitspieler.winkel = w.a[2];
+
+  if (!mitspieler) mitspieler = { x: w.a[0], y: w.a[1], winkel: w.a[2], hp: w.hp,
+                                  r: EINSTELLUNGEN.spielerRadius };
+  // Ziel merken - dorthin wird in jedem Bild ein Stück weitergerückt.
+  mitspieler.zielX = w.a[0]; mitspieler.zielY = w.a[1];
+  mitspieler.winkel = w.a[2];
   mitspieler.hp = w.hp;
 
+  // Gegner an ihrer Nummer wiedererkennen: bekannte behalten und weiterziehen,
+  // neue dazunehmen, verschwundene weglassen. Nur so laufen sie flüssig.
+  const alt = {};
+  for (const g of gegner) if (g.nr) alt[g.nr] = g;
   gegner = w.g.map(e => {
     const art = artVonNummer(e[3]);
-    return { x: e[0], y: e[1], r: e[2], art, artName: '', boss: !!(e[6] & 1), mini: !!(e[6] & 2),
-             leben: e[4], maxLeben: e[5], treffer: (e[6] & 4) ? .1 : 0,
-             stein: (e[6] & 8) ? 1 : 0, verbuendet: (e[6] & 16) ? 1 : 0,
-             winkel: 0, eigenDrehung: 0, frost: 0, nur_abbild: true };
+    const g = alt[e[7]] || { x: e[0], y: e[1], winkel: 0, eigenDrehung: 0, frost: 0 };
+    g.nr = e[7]; g.zielX = e[0]; g.zielY = e[1];
+    g.r = e[2]; g.art = art; g.leben = e[4]; g.maxLeben = e[5];
+    g.boss = !!(e[6] & 1); g.mini = !!(e[6] & 2);
+    g.treffer = (e[6] & 4) ? .1 : 0;
+    g.stein = (e[6] & 8) ? 1 : 0; g.verbuendet = (e[6] & 16) ? 1 : 0;
+    g.nur_abbild = true;
+    return g;
   });
+
   schuesse = w.s.map(k => ({ x: k[0], y: k[1], r: k[2], winkel: k[4],
+                             vx: k[5] || 0, vy: k[6] || 0,
                              sprengradius: k[3] === 1 ? 100 : 0, mine: k[3] === 2,
                              chakram: k[3] === 3 ? {} : null, scharf: k[3] === 2,
                              zuendradius: 0, getroffen: [], nur_abbild: true }));
   gegnerSchuesse = w.q.map(k => ({ x: k[0], y: k[1], r: k[2], winkel: k[4],
+                                   vx: k[5] || 0, vy: k[6] || 0,
                                    rakete: k[3] === 1, liegt: k[3] === 2 ? 1 : 0,
                                    restzeit: 2, nur_abbild: true }));
-  hudAktualisieren();
+
+  // Die Anzeige nur ab und zu neu bauen - 20-mal je Sekunde wäre Verschwendung.
+  NETZ.hudZaehler = (NETZ.hudZaehler || 0) + 1;
+  if (NETZ.hudZaehler % 5 === 0) hudAktualisieren();
 }
 
 // --- Der Gast schickt, was er tut -------------------------------------------
@@ -3316,6 +3361,7 @@ function karteUebernehmen(k) {
   munitionFuellen();
   ausruestungPruefen();
   drohnen = [];
+  gegner = [];          // ohne das fehlt dem ersten Lagebild die Liste
   aktuelleKarte = { biom: k.biom, dunkel: k.dunkel, name: k.name, nummer: k.nummer,
                     deko: [], flecken: fleckenStreuen(), mauern: hindernisse,
                     bauen() { return this.mauern; } };
@@ -3690,11 +3736,16 @@ function freierPlatz(minAbstand = EINSTELLUNGEN.spawnAbstandMin,
   return { x: grenze(spieler.x + minAbstand, 70, WELT.b - 70), y: grenze(spieler.y, 70, WELT.h - 70) };
 }
 
+let gegnerZaehler = 0;
+
 function neuerGegner(level, artName = 'kugel') {
   const art = GEGNERARTEN[artName];
   const p = freierPlatz();
   const leben = Math.max(1, Math.round(EINSTELLUNGEN.gegnerLeben(level) * art.lebenF));
   return {
+    // Eine feste Nummer - daran erkennt der Mitspieler denselben Gegner
+    // in zwei aufeinanderfolgenden Lagebildern wieder.
+    nr: ++gegnerZaehler,
     x: p.x, y: p.y, r: art.r, boss: false, art, artName,
     leben, maxLeben: leben,
     tempo: EINSTELLUNGEN.gegnerTempo(level) * art.tempoF,
@@ -3726,6 +3777,7 @@ function neuerBoss(level) {
   const leben = Math.round(EINSTELLUNGEN.bossLeben(level) * art.lebenF
                            * (spielerZahl() === 2 ? EINSTELLUNGEN.koopBossLeben : 1));
   return {
+    nr: ++gegnerZaehler,
     x: p.x, y: p.y, r: art.r, boss: true, art,
     leben, maxLeben: leben,
     tempo: EINSTELLUNGEN.bossTempo(level) * art.tempoF,

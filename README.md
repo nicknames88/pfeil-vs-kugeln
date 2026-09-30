@@ -1,5 +1,8 @@
 # Pfeil vs. Kugeln
 
+**Hier spielen: https://pfeil.vercel.app**
+
+
 Ein Top-down-Shooter, den ich selbst programmiert habe. Du bist ein Pfeil,
 läufst mit WASD und zielst mit der Maus. Die Gegner sind Kugeln, die
 zurückschießen.
@@ -19,6 +22,12 @@ Datei.
 - **Aufträge**: überleben, einsammeln, verteidigen
 - **Schießstand** zum Ausprobieren jeder Waffe
 - Musik und alle Geräusche werden live im Browser erzeugt — keine Audiodatei
+
+## Zusammen spielen
+
+Im Menü auf **👥 Zusammen spielen**. Einer eröffnet und bekommt einen Code wie
+`KRW-4T9`, der andere tippt ihn ein. Kein Konto, keine Installation — die beiden
+Rechner reden direkt miteinander. Zu zweit kommen etwa doppelt so viele Gegner.
 
 ## Steuerung
 
