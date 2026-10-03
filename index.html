@@ -206,6 +206,9 @@
               font: 700 20px ui-monospace, Menlo, monospace; letter-spacing: 3px; }
   .codefeld:focus { outline: 2px solid #4d9dff; }
   .mitspielerhp { color: #7cff9d; }
+  .bereitstand { display: inline-flex; align-items: center; padding: 10px 16px;
+                 border-radius: 10px; font-size: 13px; font-weight: 600; color: #9fb0cc;
+                 background: #131a29; border: 1px solid #23304a; }
 
   /* Der Rucksack als Klappe: Kopfzeile immer sichtbar, Liste aufklappbar. */
   details.ausruestung > summary { list-style: none; cursor: pointer; }
@@ -3058,6 +3061,7 @@ const NETZ = {
     if (obj.t === 'karte')  { karteUebernehmen(obj);       return; }
     if (obj.t === 'hallo')  { mitspielerBegruessen(obj);   return; }
     if (obj.t === 'fertig') { gastLevelFertig(obj);        return; }
+    if (obj.t === 'bereit') { mitspielerBereitGemeldet(obj); return; }
     if (obj.t === 'tschuess') { verbindungVerloren('Dein Mitspieler hat aufgehört.'); return; }
   },
 
@@ -3169,6 +3173,11 @@ function mitspielerAktualisieren(dt) {
   const p = mitspieler;
   if (!p || NETZ.istGast) return;
 
+  // Kommt eine halbe Sekunde lang nichts mehr, bleibt er einfach stehen und
+  // hört auf zu feuern. Sonst würde er mit der letzten Eingabe weiterrennen.
+  p.letzteEingabe = (p.letzteEingabe || 0) + dt;
+  if (p.letzteEingabe > .5) { p.bx = 0; p.by = 0; p.feuer = false; }
+
   const laenge = Math.hypot(p.bx || 0, p.by || 0);
   if (laenge > 0) {
     const tempo = EINSTELLUNGEN.spielerTempo;
@@ -3191,13 +3200,18 @@ function mitspielerAktualisieren(dt) {
   lauf.ueberhitzt = !!p.ueberhitzt;
   lauf.ladung = p.ladung || 0;
   maus.gedrueckt = !!p.feuer;
-  try { schiessen(dt); } catch (e) { /* eine kaputte Waffe darf nicht alles anhalten */ }
-  p.nachladen = lauf.nachladen; p.hitze = lauf.hitze;
-  p.ueberhitzt = lauf.ueberhitzt; p.ladung = lauf.ladung;
-
-  spieler = merkSpieler; lauf.waffe = merkWaffe; lauf.nachladen = merkNachladen;
-  lauf.munition = merkMunition; lauf.hitze = merkHitze; lauf.ueberhitzt = merkUeber;
-  lauf.ladung = merkLadung; maus.gedrueckt = merkMaus;
+  // finally: Was auch immer beim Schießen schiefgeht - der Tausch MUSS zurück.
+  // Bliebe er stehen, würdest du selbst plötzlich mit seiner Waffe und seiner
+  // Munition dastehen. Genau so entstehen Hänger, die niemand mehr versteht.
+  try { schiessen(dt); }
+  catch (e) { /* eine kaputte Waffe darf nicht alles anhalten */ }
+  finally {
+    p.nachladen = lauf.nachladen; p.hitze = lauf.hitze;
+    p.ueberhitzt = lauf.ueberhitzt; p.ladung = lauf.ladung;
+    spieler = merkSpieler; lauf.waffe = merkWaffe; lauf.nachladen = merkNachladen;
+    lauf.munition = merkMunition; lauf.hitze = merkHitze; lauf.ueberhitzt = merkUeber;
+    lauf.ladung = merkLadung; maus.gedrueckt = merkMaus;
+  }
 }
 
 // Wer von euch beiden ist diesem Punkt am nächsten? Danach richten sich die
@@ -3220,6 +3234,34 @@ function mitspielerTrifftEs(schaden) {
     hinweisZeigen('💀 Dein Mitspieler ist gefallen — er kommt im nächsten Level zurück.', '#ff5c7a');
     funken(p.x, p.y, '#ff5c7a', 40);
   }
+}
+
+// --- Abstimmen vor dem nächsten Level ---------------------------------------
+// Im Laden sagt jeder, wann er fertig ist. Erst wenn beide bereit sind, geht
+// es weiter - so kauft niemand mehr in Eile ein, nur weil der andere drückt.
+function bereitUmschalten() {
+  lauf.ichBereit = !lauf.ichBereit;
+  NETZ.senden({ t: 'bereit', b: lauf.ichBereit ? 1 : 0 });
+  KLANG.kaufen();
+  bereitPruefen();
+  zeigeLaden(0, false);
+}
+
+function mitspielerBereitGemeldet(o) {
+  lauf.erBereit = !!o.b;
+  if (zustand === 'laden') {
+    bereitPruefen();
+    if (zustand === 'laden') zeigeLaden(0, false);   // Anzeige auffrischen
+  }
+}
+
+// Sind beide so weit? Dann startet der Gastgeber das nächste Level.
+function bereitPruefen() {
+  if (!NETZ.an || !NETZ.verbunden) return;
+  if (!lauf.ichBereit || !lauf.erBereit) return;
+  lauf.ichBereit = false; lauf.erBereit = false;
+  if (!NETZ.istGast) levelStarten(lauf.level);
+  // Der Gast wartet auf die Kartennachricht - die holt ihn automatisch rüber.
 }
 
 // Der Gastgeber hat das Level geschafft - der Gast bekommt seinen eigenen
@@ -3342,6 +3384,7 @@ function gastEingabeSenden() {
 // --- Der Gastgeber nimmt sie entgegen ---------------------------------------
 function gastEingabeUebernehmen(e) {
   if (NETZ.istGast || !mitspieler) return;
+  mitspieler.letzteEingabe = 0;        // frische Nachricht - die Uhr zurück
   mitspieler.bx = e.bx; mitspieler.by = e.by;
   mitspieler.winkel = e.w;
   mitspieler.feuer = !!e.f;
@@ -3432,7 +3475,10 @@ async function spielBeitreten(code) {
   NETZ.peer = new Peer();
 
   NETZ.peer.on('open', () => {
-    const leitung = NETZ.peer.connect(peerIdVon(code), { reliable: false });
+    // reliable: Nachrichten kommen an und in der richtigen Reihenfolge. Ohne
+    // das kann eine Eingabe verlorengehen - dann hing beim Gastgeber die alte
+    // fest und der Mitspieler lief weiter oder hörte nicht mehr auf zu feuern.
+    const leitung = NETZ.peer.connect(peerIdVon(code), { reliable: true });
     NETZ.leitung = leitung;
     leitung.on('open', () => {
       NETZ.verbunden = true;
@@ -3586,6 +3632,18 @@ addEventListener('keydown', e => {
   }
 });
 addEventListener('keyup', e => { tasten[e.key.toLowerCase()] = false; });
+
+// Klickst du aus dem Fenster, bekommt die Seite das Loslassen nicht mehr mit -
+// die Taste bliebe für immer gedrückt. Deshalb hier alles zurücksetzen.
+function alleTastenLoesen() {
+  for (const t in tasten) tasten[t] = false;
+  maus.gedrueckt = false;
+  stickLinks = null; stickRechts = null;
+  tippBewegung.x = 0; tippBewegung.y = 0;
+  KLANG.dauerton(null);
+}
+addEventListener('blur', alleTastenLoesen);
+document.addEventListener('visibilitychange', () => { if (document.hidden) alleTastenLoesen(); });
 
 // ============================================================================
 // Touch-Steuerung für Handy und Tablet
@@ -4034,6 +4092,7 @@ function levelStarten(n) {
   munitionFuellen();
   ausruestungPruefen();
   lauf.auftrag = lauf.uebung ? null : auftragFuer(n);
+  lauf.ichBereit = false; lauf.erBereit = false;   // neue Runde, neue Abstimmung
 
   if (n % 10 === 0) {
     gegner.push(neuerBoss(n));
@@ -8864,9 +8923,13 @@ function zeigeLaden(verdient, warBoss) {
           lauf.heilungen > 0 ? ` &nbsp;·&nbsp; <span style="color:#8fa3c4">${lauf.heilungen}× geheilt</span>` : ''}</span>
       <button class="knopf" id="heilen" ${kannHeilen ? '' : 'disabled'}
               style="background:#2a3450;color:#cfe0ff">${heilText}</button>
-      ${NETZ.istGast
-        ? `<button class="knopf" id="weiter" disabled
-             title="Der Gastgeber bestimmt, wann es weitergeht">⏳ Warte auf den Gastgeber …</button>`
+      ${NETZ.an && NETZ.verbunden
+        ? `<button class="knopf ${lauf.ichBereit ? 'leise' : ''}" id="bereit">${
+             lauf.ichBereit ? '✅ Du bist bereit — nochmal drücken zum Abwarten'
+                            : '✅ Bereit für Level ' + lauf.level}</button>
+           <span class="bereitstand">${lauf.erBereit
+             ? '👥 Dein Mitspieler ist bereit'
+             : '👥 Dein Mitspieler kauft noch ein …'}</span>`
         : `<button class="knopf" id="weiter">Weiter zu Level ${lauf.level} →</button>`}
     </div>` + ausruestungHtml() + reiter +
     (ladenReiter === 'labor'     ? laborHtml() :
@@ -8914,8 +8977,10 @@ function zeigeLaden(verdient, warBoss) {
     lauf.heilungImLevel = true;           // und erst im nächsten Level wieder möglich
     speichern(); hudAktualisieren(); zeigeLaden(0, false);
   };
-  // Als Gast darf man nicht selbst starten - sonst liefe man dem Gastgeber davon.
-  if (!NETZ.istGast) document.getElementById('weiter').onclick = () => levelStarten(lauf.level);
+  const weiterKnopf = document.getElementById('weiter');
+  if (weiterKnopf) weiterKnopf.onclick = () => levelStarten(lauf.level);
+  const bereitKnopf = document.getElementById('bereit');
+  if (bereitKnopf) bereitKnopf.onclick = bereitUmschalten;
 }
 
 // ============================================================================
