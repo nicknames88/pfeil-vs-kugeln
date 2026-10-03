@@ -3057,6 +3057,7 @@ const NETZ = {
     if (obj.t === 'welt')   { weltbildUebernehmen(obj);    return; }
     if (obj.t === 'karte')  { karteUebernehmen(obj);       return; }
     if (obj.t === 'hallo')  { mitspielerBegruessen(obj);   return; }
+    if (obj.t === 'fertig') { gastLevelFertig(obj);        return; }
     if (obj.t === 'tschuess') { verbindungVerloren('Dein Mitspieler hat aufgehört.'); return; }
   },
 
@@ -3221,6 +3222,18 @@ function mitspielerTrifftEs(schaden) {
   }
 }
 
+// Der Gastgeber hat das Level geschafft - der Gast bekommt seinen eigenen
+// Laden zu sehen, mit seinem eigenen Geld und seinen eigenen Waffen. Nur
+// losgehen darf er nicht selbst: wann es weitergeht, bestimmt der Gastgeber.
+function gastLevelFertig(o) {
+  if (!NETZ.istGast || zustand !== 'spiel') return;
+  lauf.level = o.l;
+  // Der Gast war genauso dabei - er bekommt die Abschüsse angerechnet.
+  lauf.abschuesse = Math.max(lauf.abschuesse || 0, o.abschuesse || 0);
+  gegner = []; gegnerSchuesse = [];
+  levelGeschafft();
+}
+
 // --- Was übertragen wird ----------------------------------------------------
 // Damit die Nachrichten klein bleiben, schicken wir Zahlen statt Namen.
 // Diese Liste gibt jedem Gegnertyp eine feste Nummer, die beide kennen.
@@ -3336,8 +3349,8 @@ function gastEingabeUebernehmen(e) {
 }
 
 // --- Die Karte muss bei beiden gleich sein ---------------------------------
-function karteSenden() {
-  NETZ.senden({ t: 'karte', l: lauf.level,
+function karteSenden(n) {
+  NETZ.senden({ t: 'karte', l: n !== undefined ? n : lauf.level,
     biom: aktuelleKarte.biom, dunkel: !!aktuelleKarte.dunkel,
     name: aktuelleKarte.name, nummer: aktuelleKarte.nummer,
     m: hindernisse.map(h => [Math.round(h.x), Math.round(h.y), Math.round(h.b), Math.round(h.h)]) });
@@ -4059,7 +4072,7 @@ function levelStarten(n) {
       const m = WAFFEN[id].magazin;
       if (m) mitspieler.munition[id] = m;
     }
-    if (NETZ.verbunden) { karteSenden(); weltbildSenden(); }
+    if (NETZ.verbunden) { karteSenden(n); weltbildSenden(); }
   }
 
   zustand = 'spiel';
@@ -8271,6 +8284,10 @@ function levelGeschafft() {
   KLANG.dauerton(null);
   KLANG.levelFertig();
   if (lauf.testModus) { zeigeBossWahl('geschafft'); return; }
+  // Dem Mitspieler Bescheid geben, damit er auch in seinen Laden kommt -
+  // sonst stünde er allein im leergeräumten Level herum.
+  if (NETZ.an && NETZ.verbunden && !NETZ.istGast)
+    NETZ.senden({ t: 'fertig', l: lauf.level, abschuesse: lauf.abschuesse || 0 });
   const boss = lauf.level % 10 === 0;
   if (boss && hat('regeneration')) lauf.hp = Math.min(lauf.hp + EINSTELLUNGEN.heilMenge, maxHp());
 
@@ -8847,7 +8864,10 @@ function zeigeLaden(verdient, warBoss) {
           lauf.heilungen > 0 ? ` &nbsp;·&nbsp; <span style="color:#8fa3c4">${lauf.heilungen}× geheilt</span>` : ''}</span>
       <button class="knopf" id="heilen" ${kannHeilen ? '' : 'disabled'}
               style="background:#2a3450;color:#cfe0ff">${heilText}</button>
-      <button class="knopf" id="weiter">Weiter zu Level ${lauf.level} →</button>
+      ${NETZ.istGast
+        ? `<button class="knopf" id="weiter" disabled
+             title="Der Gastgeber bestimmt, wann es weitergeht">⏳ Warte auf den Gastgeber …</button>`
+        : `<button class="knopf" id="weiter">Weiter zu Level ${lauf.level} →</button>`}
     </div>` + ausruestungHtml() + reiter +
     (ladenReiter === 'labor'     ? laborHtml() :
      ladenReiter === 'werkstatt' ? werkstattHtml() :
@@ -8894,7 +8914,8 @@ function zeigeLaden(verdient, warBoss) {
     lauf.heilungImLevel = true;           // und erst im nächsten Level wieder möglich
     speichern(); hudAktualisieren(); zeigeLaden(0, false);
   };
-  document.getElementById('weiter').onclick = () => levelStarten(lauf.level);
+  // Als Gast darf man nicht selbst starten - sonst liefe man dem Gastgeber davon.
+  if (!NETZ.istGast) document.getElementById('weiter').onclick = () => levelStarten(lauf.level);
 }
 
 // ============================================================================
