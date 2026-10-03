@@ -3664,12 +3664,35 @@ const STICK_WEITE = 62;                  // ab hier läuft man mit vollem Tempo
 
 function zielhilfeAn() { return !!fortschritt.zielhilfe; }
 
+// Welche Finger liegen GERADE auf dem Bildschirm? Daran gleichen wir unsere
+// beiden Sticks ab. Das ist der wichtigste Teil: Handys verschlucken das
+// Loslassen regelmäßig - Finger rutscht über den Rand, eine Mitteilung kommt,
+// das System schnappt sich die Geste. Bliebe der alte Stick dann liegen, würde
+// jeder neue Daumen abgewiesen und man könnte nie wieder laufen (links) oder
+// schießen (rechts). Deshalb: Bei JEDEM Ereignis prüfen, ob es den Finger
+// überhaupt noch gibt.
+function sticksAbgleichen(e) {
+  const lebendig = {};
+  for (const b of e.touches) lebendig[b.identifier] = b;
+  if (stickLinks) {
+    const b = lebendig[stickLinks.id];
+    if (!b) stickLinks = null;
+    else { stickLinks.x = b.clientX; stickLinks.y = b.clientY; }
+  }
+  if (stickRechts) {
+    const b = lebendig[stickRechts.id];
+    if (!b) stickRechts = null;
+    else { stickRechts.x = b.clientX; stickRechts.y = b.clientY; }
+  }
+}
+
 function tippStart(e) {
   // Browser lassen Ton erst nach einer Eingabe zu. Auf dem Tablet ist die
   // erste Eingabe eine Berührung - ohne diese Zeile bliebe es dort stumm,
   // weil unser preventDefault() den Ersatz-Mausklick verschluckt.
   KLANG.starten();
-  if (zustand !== 'spiel') return;
+  if (zustand !== 'spiel') { e.preventDefault(); return; }
+  sticksAbgleichen(e);
   for (const b of e.changedTouches) {
     const links = b.clientX < window.innerWidth / 2;
     const stick = { id: b.identifier, startX: b.clientX, startY: b.clientY,
@@ -3681,10 +3704,7 @@ function tippStart(e) {
 }
 
 function tippBewegen(e) {
-  for (const b of e.changedTouches) {
-    if (stickLinks  && b.identifier === stickLinks.id)  { stickLinks.x = b.clientX;  stickLinks.y = b.clientY; }
-    if (stickRechts && b.identifier === stickRechts.id) { stickRechts.x = b.clientX; stickRechts.y = b.clientY; }
-  }
+  sticksAbgleichen(e);
   e.preventDefault();
 }
 
@@ -3693,6 +3713,7 @@ function tippEnde(e) {
     if (stickLinks  && b.identifier === stickLinks.id)  stickLinks = null;
     if (stickRechts && b.identifier === stickRechts.id) stickRechts = null;
   }
+  sticksAbgleichen(e);      // zur Sicherheit nochmal gegen die Wirklichkeit prüfen
   e.preventDefault();
 }
 
